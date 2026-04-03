@@ -12,19 +12,9 @@ import casadi as ca
 import numpy as np
 
 from ..base import NLP
+from .common import validate_s_mesh
+from .decode import CollocationConIndex, CollocationLayout, CollocationVarIndex
 from .schemes import CollocationTable
-from .decode import CollocationLayout
-
-
-def _validate_s_mesh(s_mesh: np.ndarray) -> None:
-    """Validate normalized mesh monotonicity and endpoint convention."""
-    s_mesh = np.asarray(s_mesh, float).reshape(-1)
-    if s_mesh.size < 2:
-        raise ValueError("s_mesh must have length >= 2")
-    if not np.all(np.diff(s_mesh) > 0.0):
-        raise ValueError("s_mesh must be strictly increasing")
-    if abs(float(s_mesh[0]) - 0.0) > 1e-12 or abs(float(s_mesh[-1]) - 1.0) > 1e-12:
-        raise ValueError("s_mesh must start at 0 and end at 1 (within tolerance)")
 
 
 def _midpoint_safe(lb: np.ndarray, ub: np.ndarray) -> np.ndarray:
@@ -61,6 +51,103 @@ def _safe_u_fill(ocp: Any, *, n_u: int) -> np.ndarray:
     return u
 
 
+def _resolve_scaling_data(ocp: Any, *, n_x: int) -> Tuple[Any, Optional[float], Optional[float], np.ndarray]:
+    """Extract scaling metadata and defect scaling vector from the OCP."""
+    scaling = getattr(ocp, "scaling", None)
+
+    t_ref = None
+    t0_phys = None
+    if scaling is not None and getattr(scaling, "t_ref", None) is not None:
+        t_ref = float(scaling.t_ref)
+        t0_phys = float(getattr(scaling, "t0_phys", 0.0))
+
+    if scaling is not None:
+        defect_ref = np.asarray(scaling.defect_scale_vec(nx=n_x), float).reshape(-1)
+    else:
+        defect_ref = np.ones(n_x, dtype=float)
+
+    return scaling, t_ref, t0_phys, defect_ref
+
+
+def _create_time_symbol(tf_spec: Any) -> Tuple[ca.MX, bool, Optional[float], Optional[float]]:
+    """Return the final-time symbol/value and free-time bookkeeping."""
+    free_tf = isinstance(tf_spec, tuple)
+    if free_tf:
+        tf_lb, tf_ub = tf_spec
+        return ca.MX.sym("tf"), True, float(tf_lb), float(tf_ub)  # type: ignore[arg-type]
+    return ca.MX(float(tf_spec)), False, None, None
+
+
+def _create_parameter_symbol(ocp: Any, *, n_p: int) -> Tuple[ca.MX, bool]:
+    """Return the parameter symbol/value and free-parameter flag."""
+    free_p = (n_p > 0) and (ocp.p_bounds is not None)
+    if n_p == 0:
+        return ca.DM([]), False
+    if free_p:
+        return ca.MX.sym("p", n_p), True  # type: ignore[arg-type]
+    if ocp.p0_guess is None:
+        raise ValueError("Fixed parameters require ocp.p0_guess")
+    return ca.DM(ocp.p0_guess), False
+
+
+def _build_time_outputs(
+    *,
+    layout: CollocationLayout,
+    s_mesh: np.ndarray,
+    ds: np.ndarray,
+    tau: np.ndarray,
+    tf: ca.MX,
+    scaling: Any,
+    t_ref: Optional[float],
+    t0_phys: Optional[float],
+) -> Tuple[ca.MX, ca.MX, ca.MX]:
+    """Build mesh/collocation time outputs and physical final time."""
+    s_mesh_dm = ca.DM(list(s_mesh))
+    t_mesh_hat = float(layout.t0) + tf * s_mesh_dm
+
+    s_col: List[float] = []
+    for i in range(layout.N):
+        s_i = float(s_mesh[i])
+        ds_i = float(ds[i])
+        for j in range(layout.K):
+            s_col.append(s_i + ds_i * float(tau[j + 1]))
+    t_col_hat = float(layout.t0) + tf * ca.DM(s_col)
+
+    if scaling is not None and getattr(scaling, "space", "physical") == "scaled" and t_ref is not None:
+        tf_phys = float(t_ref) * tf
+        t_mesh = float(t0_phys) + float(t_ref) * t_mesh_hat
+        t_col = float(t0_phys) + float(t_ref) * t_col_hat
+        return t_mesh, t_col, tf_phys
+
+    return t_mesh_hat, t_col_hat, tf
+
+
+def _physical_bounds_from_ocp_bounds(ocp: Any, scaling: Any) -> Dict[str, Any]:
+    """Store bounds in both OCP space and physical space for diagnostics."""
+    bounds_ocp = {
+        "x": ocp.x_bounds,
+        "u": ocp.u_bounds,
+        "p": ocp.p_bounds,
+    }
+    bounds_phys = dict(bounds_ocp)
+
+    if scaling is None or getattr(scaling, "x_ref", None) is None:
+        return {"bounds_ocp": bounds_ocp, "bounds_phys": bounds_phys}
+
+    x_ref = np.asarray(scaling.x_ref, float)
+    u_ref = np.asarray(scaling.u_ref, float) if getattr(scaling, "u_ref", None) is not None else None
+    p_ref = np.asarray(scaling.p_ref, float) if getattr(scaling, "p_ref", None) is not None else None
+
+    if bounds_ocp["x"] is not None:
+        bounds_phys["x"] = scaling.unscale_bounds(bounds_ocp["x"], ref=x_ref)
+    if bounds_ocp["u"] is not None and u_ref is not None:
+        bounds_phys["u"] = scaling.unscale_bounds(bounds_ocp["u"], ref=u_ref)
+    if bounds_ocp["p"] is not None and p_ref is not None:
+        bounds_phys["p"] = scaling.unscale_bounds(bounds_ocp["p"], ref=p_ref)
+
+    return {"bounds_ocp": bounds_ocp, "bounds_phys": bounds_phys}
+
+
 def build_collocation_nlp(
     ocp: Any,
     *,
@@ -86,8 +173,7 @@ def build_collocation_nlp(
     """
     ocp.validate()
 
-    s_mesh = np.asarray(s_mesh, float).reshape(-1)
-    _validate_s_mesh(s_mesh)
+    s_mesh = validate_s_mesh(s_mesh)
 
     N = int(s_mesh.size - 1)
     ds = np.diff(s_mesh)  # length N, positive
@@ -108,45 +194,17 @@ def build_collocation_nlp(
         t0=float(getattr(ocp, "t0", 0.0)),
     )
 
-    scaling = getattr(ocp, "scaling", None)
-
-    # For trajectory reconstruction
-    t_ref = None
-    t0_phys = None
-    if scaling is not None:
-        if getattr(scaling, "t_ref", None) is not None:
-            t_ref = float(scaling.t_ref)
-            t0_phys = float(getattr(scaling, "t0_phys", 0.0))
-
-    # Defect scaling vector in OCP coordinates
-    if scaling is not None:
-        defect_ref = np.asarray(scaling.defect_scale_vec(nx=n_x), float).reshape(-1)
-    else:
-        defect_ref = np.ones(n_x, dtype=float)
+    scaling, t_ref, t0_phys, defect_ref = _resolve_scaling_data(ocp, n_x=n_x)
 
     # -------------------------------------------------------------------------
     # Time variables (in OCP's time coordinates)
     # -------------------------------------------------------------------------
-    free_tf = isinstance(ocp.tf, tuple)
-    if free_tf:
-        tf_lb, tf_ub = ocp.tf
-        tf = ca.MX.sym("tf")  # type: ignore[arg-type]
-    else:
-        tf = ca.MX(float(ocp.tf))
+    tf, free_tf, tf_lb, tf_ub = _create_time_symbol(ocp.tf)
 
     # -------------------------------------------------------------------------
     # Parameters
     # -------------------------------------------------------------------------
-    free_p = (n_p > 0) and (ocp.p_bounds is not None)
-    if n_p > 0:
-        if free_p:
-            p = ca.MX.sym("p", n_p)  # type: ignore[arg-type]
-        else:
-            if ocp.p0_guess is None:
-                raise ValueError("Fixed parameters require ocp.p0_guess")
-            p = ca.DM(ocp.p0_guess)
-    else:
-        p = ca.DM([])
+    p, free_p = _create_parameter_symbol(ocp, n_p=n_p)
 
     # -------------------------------------------------------------------------
     # NLP containers
@@ -391,29 +449,16 @@ def build_collocation_nlp(
     X_col_mat = ca.vertcat(*X_col_list)  # (N*K, nx)
     U_col_mat = ca.vertcat(*U_col_list)  # (N*K, nu)
 
-    # Times in OCP coordinates:
-    #   t_mesh_hat = t0 + tf * s_mesh
-    #   t_col_hat  = t0 + tf * (s_i + ds_i * tau[j+1])
-    s_mesh_dm = ca.DM(list(s_mesh))
-    t_mesh_hat = float(layout.t0) + tf * s_mesh_dm
-
-    s_col = []
-    for i in range(N):
-        s_i = float(s_mesh[i])
-        ds_i = float(ds[i])
-        for j in range(K):
-            s_col.append(s_i + ds_i * float(tau[j + 1]))
-    t_col_hat = float(layout.t0) + tf * ca.DM(s_col)
-
-    # Convert to physical time if scaling is active
-    if scaling is not None and getattr(scaling, "space", "physical") == "scaled" and t_ref is not None:
-        tf_phys = float(t_ref) * tf
-        t_mesh = float(t0_phys) + float(t_ref) * t_mesh_hat
-        t_col  = float(t0_phys) + float(t_ref) * t_col_hat
-    else:
-        tf_phys = tf
-        t_mesh = t_mesh_hat
-        t_col  = t_col_hat
+    t_mesh, t_col, tf_phys = _build_time_outputs(
+        layout=layout,
+        s_mesh=s_mesh,
+        ds=ds,
+        tau=tau,
+        tf=tf,
+        scaling=scaling,
+        t_ref=t_ref,
+        t0_phys=t0_phys,
+    )
 
     # -------------------------------------------------------------------------
     # NLP assembly
@@ -422,26 +467,7 @@ def build_collocation_nlp(
     gvec = ca.vertcat(*g)
     prob = {"f": J, "x": wvec, "g": gvec}
 
-    # Store bounds in BOTH spaces (OCP space and physical space) for plotting/archival
-    x_bounds_ocp = ocp.x_bounds
-    u_bounds_ocp = ocp.u_bounds
-    p_bounds_ocp = ocp.p_bounds
-
-    x_bounds_phys = x_bounds_ocp
-    u_bounds_phys = u_bounds_ocp
-    p_bounds_phys = p_bounds_ocp
-
-    if scaling is not None and getattr(scaling, "x_ref", None) is not None:
-        x_ref = np.asarray(scaling.x_ref, float)
-        u_ref = np.asarray(scaling.u_ref, float) if getattr(scaling, "u_ref", None) is not None else None
-        p_ref = np.asarray(scaling.p_ref, float) if getattr(scaling, "p_ref", None) is not None else None
-
-        if x_bounds_ocp is not None:
-            x_bounds_phys = scaling.unscale_bounds(x_bounds_ocp, ref=x_ref)
-        if u_bounds_ocp is not None and u_ref is not None:
-            u_bounds_phys = scaling.unscale_bounds(u_bounds_ocp, ref=u_ref)
-        if p_bounds_ocp is not None and p_ref is not None:
-            p_bounds_phys = scaling.unscale_bounds(p_bounds_ocp, ref=p_ref)
+    bounds = _physical_bounds_from_ocp_bounds(ocp, scaling)
 
     meta: Dict[str, Any] = {
         "discretization": "direct_collocation",
@@ -458,31 +484,23 @@ def build_collocation_nlp(
         "s_mesh": np.asarray(s_mesh, float),
         "layout": layout,
         "quad_weights": wq,
-        "bounds_ocp": {
-            "x": x_bounds_ocp,
-            "u": u_bounds_ocp,
-            "p": p_bounds_ocp,
-        },
-        "bounds_phys": {
-            "x": x_bounds_phys,
-            "u": u_bounds_phys,
-            "p": p_bounds_phys,
-        },
-        "var_index": {
-            "X_mesh": X_mesh_idx,
-            "X_colloc": X_col_idx,
-            "U_colloc": U_col_idx,
-            "tf": tf_idx,
-            "p": p_idx,
-        },
-        "con_index": {
-            "init": init_eq_idx,
-            "defect": defect_idx,
-            "continuity": cont_idx,
-            "boundary": bnd_idx,
-            "path": path_idx,
-            "state": state_idx,
-        },
+        "bounds_ocp": bounds["bounds_ocp"],
+        "bounds_phys": bounds["bounds_phys"],
+        "var_index": CollocationVarIndex(
+            X_mesh=X_mesh_idx,
+            X_colloc=X_col_idx,
+            U_colloc=U_col_idx,
+            tf=tf_idx,
+            p=p_idx,
+        ),
+        "con_index": CollocationConIndex(
+            init=init_eq_idx,
+            defect=defect_idx,
+            continuity=cont_idx,
+            boundary=bnd_idx,
+            path=path_idx,
+            state=state_idx,
+        ),
         "unpack_outputs": ["X_mesh", "X_colloc", "U_colloc", "t_mesh", "t_colloc", "tf"],
     }
 

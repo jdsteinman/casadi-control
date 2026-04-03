@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "casadi-control"
 version = "0.1.0"
-description = "CasADi optimal control framework."
+description = "Tools for formulating and solving continuous-time optimal control problems with CasADi."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -23,6 +23,11 @@ classifiers = [
   "Topic :: Scientific/Engineering",
 ]
 
+[project.urls]
+Homepage = "https://github.com/jdsteinman/casadi-control"
+Repository = "https://github.com/jdsteinman/casadi-control"
+Issues = "https://github.com/jdsteinman/casadi-control/issues"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
@@ -32,16 +37,22 @@ where = ["src"]
 [project.optional-dependencies]
 examples = [
   "matplotlib",
+  "jupytext",
 ]
 test = [
   "pytest",
   "scipy",
 ]
 docs = [
+  "matplotlib",
   "sphinx>=7",
   "pydata-sphinx-theme",
   "numpydoc",
   "sphinx-design",
+  "sphinxcontrib-bibtex",
+  "nbsphinx",
+  "jupytext",
+  "ipykernel",
 ]
 dev = [
   "pytest",
@@ -51,6 +62,10 @@ dev = [
   "pydata-sphinx-theme",
   "numpydoc",
   "sphinx-design",
+  "sphinxcontrib-bibtex",
+  "nbsphinx",
+  "jupytext",
+  "ipykernel",
 ]
 
 [tool.pytest.ini_options]

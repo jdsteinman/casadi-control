@@ -7,22 +7,28 @@ Requirements
 CasADi-Control requires:
 
 * Python ≥ 3.10
-* pip
+* ``pip`` or another PEP 517-compatible installer
 
 Base installation
 -----------------
 
-Install the package:
+From the repository root, install the package with:
 
 .. code-block:: bash
 
    pip install .
 
-For local development (editable install):
+For local development, prefer an editable install:
 
 .. code-block:: bash
 
    pip install -e .
+
+To confirm the package imports successfully:
+
+.. code-block:: bash
+
+   python -c "import casadi_control; print(casadi_control.__all__[:3])"
 
 Optional dependency groups
 --------------------------
@@ -42,6 +48,27 @@ Install extras depending on your workflow:
 
    # full development setup
    pip install -e ".[dev]"
+
+These extras are additive. For example, ``.[dev]`` is the easiest choice if
+you want the test, documentation, and example dependencies in one environment.
+
+Development shortcuts
+---------------------
+
+The repository includes a top-level ``Makefile`` with a few common tasks:
+
+.. code-block:: bash
+
+   make install-dev
+   make test
+   make docs
+
+You can also run examples directly from the repository root:
+
+.. code-block:: bash
+
+   python examples/hager_lq_ocp.py
+   python examples/hager_hou_rao_ocp.py
 
 Build documentation
 -------------------

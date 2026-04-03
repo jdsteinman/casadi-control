@@ -81,7 +81,48 @@ def solve(
     options: Optional[Dict[str, Any]] = None,
     solver_name: str = "ipopt",
 ) -> SolveResult:
-    """Build, solve, and postprocess an OCP in one call."""
+    """Build, solve, and postprocess an OCP in one call.
+
+    This is the highest-level entry point when you want the standard workflow
+    without manually orchestrating each stage. Internally it performs:
+
+    1. ``discretization.build(ocp)``
+    2. ``discretization.guess(...)`` unless an explicit ``guess`` is provided
+    3. solver execution
+    4. ``discretization.postprocess(...)``
+
+    Parameters
+    ----------
+    ocp : OCP
+        Continuous-time optimal control problem.
+    discretization : Discretization
+        Transcription used to build the NLP and decode the result.
+    solver : str, optional
+        Solver backend identifier. Currently only ``"ipopt"`` is supported.
+    guess : Guess, optional
+        Explicit initial guess. When omitted, ``guess_strategy``,
+        ``guess_prev``, and ``guess_kwargs`` are forwarded to
+        :meth:`Discretization.guess`.
+    guess_strategy : str, optional
+        Strategy name passed to :meth:`Discretization.guess`.
+    guess_prev : Trajectory, optional
+        Previous trajectory used for continuation-style guess generation.
+    guess_kwargs : dict, optional
+        Additional keyword arguments forwarded to :meth:`Discretization.guess`.
+
+    Returns
+    -------
+    SolveResult
+        Bundle containing the NLP, guess, raw solver result, and postprocessed
+        trajectories.
+
+    Notes
+    -----
+    Use this function when you want convenience. Drop to the lower-level
+    ``build`` / solver / ``postprocess`` sequence when you want to inspect the
+    NLP directly, reuse an existing solver instance, or save artifacts at
+    intermediate stages.
+    """
     nlp: NLPLike = discretization.build(ocp)
     used_explicit_guess = guess is not None
 

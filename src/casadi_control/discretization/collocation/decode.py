@@ -3,9 +3,37 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypeAlias
 
 import numpy as np
+
+
+IndexSpan: TypeAlias = tuple[int, int]
+IndexGrid: TypeAlias = list[list[IndexSpan]]
+OptionalIndexGrid: TypeAlias = list[list[Optional[IndexSpan]]]
+
+
+@dataclass(frozen=True)
+class CollocationVarIndex:
+    """Typed variable-block indices for a collocation NLP."""
+
+    X_mesh: list[IndexSpan]
+    X_colloc: IndexGrid
+    U_colloc: IndexGrid
+    tf: Optional[IndexSpan] = None
+    p: Optional[IndexSpan] = None
+
+
+@dataclass(frozen=True)
+class CollocationConIndex:
+    """Typed constraint-block indices for a collocation NLP."""
+
+    init: Optional[IndexSpan]
+    defect: IndexGrid
+    continuity: list[IndexSpan]
+    boundary: Optional[IndexSpan] = None
+    path: OptionalIndexGrid | None = None
+    state: OptionalIndexGrid | None = None
 
 
 # =============================================================================
@@ -91,12 +119,29 @@ class CollocationMeta:
         return int(self.meta["degree"])
 
     @property
+    def n_x(self) -> int:
+        return int(self.meta["n_x"])
+
+    @property
+    def n_u(self) -> int:
+        return int(self.meta["n_u"])
+
+    @property
     def tau(self) -> np.ndarray:
         return np.asarray(self.meta["tau"], float).reshape(-1)
 
     @property
     def space(self) -> str:
         return str(self.meta["space"])
+
+    @property
+    def t_ref(self) -> Optional[float]:
+        val = self.meta.get("t_ref", None)
+        return None if val is None else float(val)
+
+    @property
+    def t0_phys(self) -> float:
+        return float(self.meta["t0_phys"])
 
     @property
     def scaling(self) -> Any:
@@ -116,16 +161,16 @@ class CollocationMeta:
             raise TypeError("meta['bounds_phys'] must be a dict")
         return b
 
-    def var_index(self) -> Dict[str, Any]:
+    def var_index(self) -> CollocationVarIndex:
         vix = self.meta["var_index"]
-        if not isinstance(vix, dict):
-            raise TypeError("meta['var_index'] must be a dict")
+        if not isinstance(vix, CollocationVarIndex):
+            raise TypeError("meta['var_index'] must be a CollocationVarIndex")
         return vix
 
-    def con_index(self) -> Dict[str, Any]:
+    def con_index(self) -> CollocationConIndex:
         cix = self.meta["con_index"]
-        if not isinstance(cix, dict):
-            raise TypeError("meta['con_index'] must be a dict")
+        if not isinstance(cix, CollocationConIndex):
+            raise TypeError("meta['con_index'] must be a CollocationConIndex")
         return cix
 
 
@@ -135,8 +180,32 @@ class CollocationMeta:
 
 @dataclass(frozen=True)
 class CollocationPrimalGrid:
-    """
-    Decoded primal values on mesh and collocation nodes.
+    """Decoded primal values on mesh and collocation nodes.
+
+    This is the main grid-level primal payload stored in
+    ``PostProcessed.decoded`` for direct collocation. All arrays here are
+    already unpacked from the flat NLP decision vector.
+
+    Attributes
+    ----------
+    x_mesh : ndarray
+        State values at mesh nodes, shape ``(N+1, nx)``.
+    x_colloc : ndarray
+        State values at collocation nodes, shape ``(N, K, nx)``.
+    u_colloc : ndarray
+        Control values at collocation nodes, shape ``(N, K, nu)``.
+    t_mesh : ndarray
+        Physical-time mesh nodes, shape ``(N+1,)``.
+    t_colloc : ndarray
+        Physical-time collocation nodes, shape ``(N, K)``.
+    tf : float
+        Physical final time.
+
+    Notes
+    -----
+    Use this object when you want the actual collocation-node data used by the
+    transcription, for example when plotting node values, checking mesh
+    refinement behavior, or building custom residual diagnostics.
     """
     x_mesh: np.ndarray         # (N+1, nx)
     x_colloc: np.ndarray       # (N, K, nx)
@@ -194,11 +263,14 @@ class CollocationPrimalGrid:
 
 @dataclass(frozen=True)
 class CollocationKKTMultipliers:
-    """
-    Decoded NLP constraint multipliers.
+    """Decoded NLP constraint multipliers.
 
     These correspond to constraints as encoded in the NLP, not yet to continuous
     costates or continuous multiplier fields.
+
+    In other words, this object reflects the solver's dual variables on the
+    discrete transcription grid. If you want interpreted costates and
+    multiplier trajectories, use :class:`CollocationAdjointGrid` instead.
     """
     t_mesh: np.ndarray
     t_colloc: np.ndarray
@@ -289,8 +361,12 @@ class CollocationBoundKKT:
 
 @dataclass(frozen=True)
 class CollocationAdjointGrid:
-    """
-    Continuous dual quantities represented on mesh and collocation nodes.
+    """Continuous dual quantities represented on mesh and collocation nodes.
+
+    This object is the dual counterpart of :class:`CollocationPrimalGrid`.
+    Unlike :class:`CollocationKKTMultipliers`, its arrays are intended to be
+    interpreted as costate-like and multiplier-like quantities aligned with the
+    postprocessed primal trajectory.
     """
     t_mesh: np.ndarray
     t_colloc: np.ndarray
@@ -381,8 +457,41 @@ class CollocationAdjointGrid:
 
 @dataclass(frozen=True)
 class CollocationDecoded:
-    """
-    Full decoded collocation postprocessing payload.
+    """Full decoded collocation postprocessing payload.
+
+    This is the concrete type stored in ``pp.decoded`` after
+    :meth:`casadi_control.discretization.collocation.DirectCollocation.postprocess`.
+
+    Attributes
+    ----------
+    layout : CollocationLayout
+        Structural metadata for the discretization: number of intervals,
+        collocation degree, normalized mesh, collocation nodes, and initial
+        time.
+    primal : CollocationPrimalGrid
+        Physical-time primal arrays unpacked from the solution.
+    primal_scaled : CollocationPrimalGrid, optional
+        Solver/scaled-coordinate version of the primal arrays when scaling is
+        active.
+    kkt, kkt_scaled : CollocationKKTMultipliers, optional
+        Decoded NLP constraint multipliers in physical and solver coordinates.
+    bound_kkt, bound_kkt_scaled : CollocationBoundKKT, optional
+        Decoded decision-variable bound multipliers in physical and solver
+        coordinates.
+    adjoint : CollocationAdjointGrid, optional
+        Interpreted continuous dual quantities reconstructed from the NLP
+        multipliers.
+
+    Notes
+    -----
+    ``CollocationDecoded`` is useful when you need the collocation solution in
+    the coordinates and block structure of the transcription itself. Common
+    examples include:
+
+    - plotting mesh and collocation node values directly
+    - comparing physical and scaled variables
+    - inspecting raw NLP multipliers before or after dual interpretation
+    - exporting structured arrays for custom reports or regression tests
     """
     layout: CollocationLayout
 

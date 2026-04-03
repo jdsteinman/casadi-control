@@ -49,31 +49,166 @@ from typing import Any, Callable, Optional, Tuple, Union, Literal
 import numpy as np
 import casadi as ca
 
+from .._array_utils import as_optional_1d_float_array
 from .scaling import Scaling
 
 
 TfSpec = Union[float, Tuple[float, float]]  # fixed tf or (lb, ub) for free tf
+def _scaling_ref_or_ones(ref: Optional[np.ndarray], size: int) -> np.ndarray:
+    """Return a scaling reference vector, defaulting to ones."""
+    return np.ones(size) if ref is None else ref
 
 
-def _as_1d_array(x):
-    """Convert scalar-like input to a one-dimensional float array.
+def _validate_scaling_refs(
+    *,
+    n_x: int,
+    n_u: int,
+    n_p: int,
+    scaling: Scaling,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Resolve and validate scaling reference vectors."""
+    x_ref = _scaling_ref_or_ones(scaling.x_ref, n_x)
+    u_ref = _scaling_ref_or_ones(scaling.u_ref, n_u)
+    p_ref = _scaling_ref_or_ones(scaling.p_ref, n_p) if n_p > 0 else np.ones(0)
 
-    Parameters
-    ----------
-    x : Any
-        Scalar or array-like input, or ``None``.
+    if x_ref.shape[0] != n_x:
+        raise ValueError("scaling.x_ref has wrong dimension")
+    if u_ref.shape[0] != n_u:
+        raise ValueError("scaling.u_ref has wrong dimension")
+    if n_p > 0 and p_ref.shape[0] != n_p:
+        raise ValueError("scaling.p_ref has wrong dimension")
 
-    Returns
-    -------
-    ndarray or None
-        One-dimensional ``float`` array, or ``None`` if ``x`` is ``None``.
-    """
-    if x is None:
+    return x_ref, u_ref, p_ref
+
+
+def _normalized_tf(tf: TfSpec, *, t_ref: Optional[float]) -> TfSpec:
+    """Scale final-time data into the returned OCP coordinate system."""
+    if t_ref is None:
+        return tf
+    if isinstance(tf, tuple):
+        lb, ub = tf
+        return float(lb) / float(t_ref), float(ub) / float(t_ref)
+    return float(tf) / float(t_ref)
+
+
+def _scale_bounds(
+    bounds: Optional[Tuple[np.ndarray, np.ndarray]],
+    *,
+    ref: np.ndarray,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Scale lower/upper bounds component-wise by a reference vector."""
+    if bounds is None:
         return None
-    arr = np.atleast_1d(np.asarray(x, dtype=float))
-    if arr.ndim != 1:
-        raise ValueError(f"Expected 1D array or scalar, got shape {arr.shape}")
-    return arr
+    lb, ub = bounds
+    return (
+        np.asarray(lb, float).reshape(-1) / ref,
+        np.asarray(ub, float).reshape(-1) / ref,
+    )
+
+
+def _scale_optional_vector(vec: Optional[np.ndarray], *, ref: np.ndarray) -> Optional[np.ndarray]:
+    """Scale an optional vector component-wise by a reference vector."""
+    if vec is None:
+        return None
+    return np.asarray(vec, float).reshape(-1) / ref
+
+
+def _make_scaled_callbacks(
+    ocp: "OCP",
+    *,
+    x_ref: np.ndarray,
+    u_ref: np.ndarray,
+    p_ref: np.ndarray,
+    t_ref: Optional[float],
+    t0_phys: float,
+) -> Dict[str, Optional[Callable]]:
+    """Wrap OCP callbacks so they operate on scaled coordinates."""
+    x_ref_dm = ca.DM(x_ref)
+    u_ref_dm = ca.DM(u_ref)
+    p_ref_dm = ca.DM(p_ref) if ocp.n_p > 0 else ca.DM([])
+
+    x_ref_inv_dm = ca.DM(1.0 / x_ref)
+    x_dyn_scale_dm = x_ref_inv_dm if t_ref is None else ca.DM(float(t_ref) / x_ref)
+
+    def t_phys_from_scaled(t_hat_or_t_phys):
+        if t_ref is None:
+            return t_hat_or_t_phys
+        return t0_phys + float(t_ref) * t_hat_or_t_phys
+
+    def endpoint_times(t0_hat_in, tf_hat_in):
+        if t_ref is None:
+            return t0_hat_in, tf_hat_in
+        return t0_phys, t0_phys + float(t_ref) * tf_hat_in
+
+    def phys_from_scaled(xh, uh, ph, t_hat_or_t_phys):
+        x = ca.diag(x_ref_dm) @ xh
+        u = ca.diag(u_ref_dm) @ uh
+        p = (ca.diag(p_ref_dm) @ ph) if ocp.n_p > 0 else ph
+        t = t_phys_from_scaled(t_hat_or_t_phys)
+        return x, u, p, t
+
+    assert ocp.f_dyn is not None
+
+    def f_dyn_hat(xh, uh, ph, t_hat_or_t_phys):
+        x, u, p, t = phys_from_scaled(xh, uh, ph, t_hat_or_t_phys)
+        fx = ocp.f_dyn(x, u, p, t)
+        return ca.diag(x_dyn_scale_dm) @ fx
+
+    l_run_hat: Optional[Callable] = None
+    if ocp.l_run is not None:
+        def _l_run_hat(xh, uh, ph, t_hat_or_t_phys):
+            x, u, p, t = phys_from_scaled(xh, uh, ph, t_hat_or_t_phys)
+            assert ocp.l_run is not None
+            val = ocp.l_run(x, u, p, t)
+            return val if t_ref is None else float(t_ref) * val
+        l_run_hat = _l_run_hat
+
+    l_end_hat: Optional[Callable] = None
+    if ocp.l_end is not None:
+        def _l_end_hat(x0h, xfh, ph, t0_hat_in, tf_hat_in):
+            x0 = ca.diag(x_ref_dm) @ x0h
+            xf = ca.diag(x_ref_dm) @ xfh
+            p = (ca.diag(p_ref_dm) @ ph) if ocp.n_p > 0 else ph
+            t0p, tfp = endpoint_times(t0_hat_in, tf_hat_in)
+            assert ocp.l_end is not None
+            return ocp.l_end(x0, xf, p, t0p, tfp)
+        l_end_hat = _l_end_hat
+
+    bnd_constr_hat: Optional[Callable[..., Any]] = None
+    if ocp.bnd_constr is not None:
+        def _bnd_constr_hat(x0h, xfh, ph, t0_hat_in, tf_hat_in):
+            x0 = ca.diag(x_ref_dm) @ x0h
+            xf = ca.diag(x_ref_dm) @ xfh
+            p = (ca.diag(p_ref_dm) @ ph) if ocp.n_p > 0 else ph
+            t0p, tfp = endpoint_times(t0_hat_in, tf_hat_in)
+            assert ocp.bnd_constr is not None
+            return ocp.bnd_constr(x0, xf, p, t0p, tfp)
+        bnd_constr_hat = _bnd_constr_hat
+
+    path_constr_hat: Optional[Callable[..., Any]] = None
+    if ocp.path_constr is not None:
+        def _path_constr_hat(xh, uh, ph, t_hat_or_t_phys):
+            x, u, p, t = phys_from_scaled(xh, uh, ph, t_hat_or_t_phys)
+            assert ocp.path_constr is not None
+            return ocp.path_constr(x, u, p, t)
+        path_constr_hat = _path_constr_hat
+
+    state_constr_hat: Optional[Callable[..., Any]] = None
+    if ocp.state_constr is not None:
+        def _state_constr_hat(xh, ph, t_hat_or_t_phys):
+            x, _, p, t = phys_from_scaled(xh, ca.MX.zeros(ocp.n_u), ph, t_hat_or_t_phys)
+            assert ocp.state_constr is not None
+            return ocp.state_constr(x, p, t)
+        state_constr_hat = _state_constr_hat
+
+    return {
+        "f_dyn": f_dyn_hat,
+        "l_run": l_run_hat,
+        "l_end": l_end_hat,
+        "bnd_constr": bnd_constr_hat,
+        "path_constr": path_constr_hat,
+        "state_constr": state_constr_hat,
+    }
 
 
 
@@ -154,8 +289,8 @@ class OCP:
     scaling: Optional[Scaling] = None
 
     def __post_init__(self):
-        object.__setattr__(self, "x0_fixed", _as_1d_array(self.x0_fixed))
-        object.__setattr__(self, "p0_guess", _as_1d_array(self.p0_guess))
+        object.__setattr__(self, "x0_fixed", as_optional_1d_float_array(self.x0_fixed))
+        object.__setattr__(self, "p0_guess", as_optional_1d_float_array(self.p0_guess))
 
         if self.x0_fixed is not None and self.x0_fixed.shape[0] != self.n_x:
             raise ValueError("x0_fixed has wrong dimension")
@@ -258,18 +393,13 @@ class OCP:
             * if scaling.t_ref is set: dimensionless time with t0_hat typically 0
             * else: physical time
         """
-        # Build refs
-        x_ref = np.ones(self.n_x) if scaling.x_ref is None else scaling.x_ref
-        u_ref = np.ones(self.n_u) if scaling.u_ref is None else scaling.u_ref
-        p_ref = np.ones(self.n_p) if self.n_p == 0 or scaling.p_ref is None else scaling.p_ref
+        x_ref, u_ref, p_ref = _validate_scaling_refs(
+            n_x=self.n_x,
+            n_u=self.n_u,
+            n_p=self.n_p,
+            scaling=scaling,
+        )
         t_ref = scaling.t_ref
-
-        if x_ref.shape[0] != self.n_x:
-            raise ValueError("scaling.x_ref has wrong dimension")
-        if u_ref.shape[0] != self.n_u:
-            raise ValueError("scaling.u_ref has wrong dimension")
-        if self.n_p > 0 and p_ref.shape[0] != self.n_p:
-            raise ValueError("scaling.p_ref has wrong dimension")
 
         # Ensure we can reconstruct physical time if time-normalizing
         if t_ref is not None and scaling.t0_phys is None:
@@ -278,115 +408,17 @@ class OCP:
         # Returned scaling is explicitly "scaled"
         scaling_hat = replace(scaling, space="scaled")
 
-        x_ref_dm = ca.DM(x_ref)
-        u_ref_dm = ca.DM(u_ref)
-        p_ref_dm = ca.DM(p_ref) if self.n_p > 0 else ca.DM([])
-
         t0_phys = float(self.t0)
-
-        # Scaled time starts at 0 if normalized; otherwise preserve physical t0
         t0_hat = 0.0 if t_ref is not None else float(self.t0)
-
-        def _t_phys(t_hat_or_t_phys):
-            if t_ref is None:
-                return t_hat_or_t_phys
-            return t0_phys + float(t_ref) * t_hat_or_t_phys
-
-        def phys_from_scaled(xh, uh, ph, t_hat_or_t_phys):
-            x = ca.diag(x_ref_dm) @ xh
-            u = ca.diag(u_ref_dm) @ uh
-            p = (ca.diag(p_ref_dm) @ ph) if self.n_p > 0 else ph
-            t = _t_phys(t_hat_or_t_phys)
-            return x, u, p, t
-
-        def f_dyn_hat(xh, uh, ph, t_hat_or_t_phys):
-            x, u, p, t = phys_from_scaled(xh, uh, ph, t_hat_or_t_phys)
-            assert self.f_dyn is not None
-            fx = self.f_dyn(x, u, p, t)
-
-            # xh' = (dt_phys/dt_hat) * (1/x_ref) * f
-            if t_ref is None:
-                return ca.diag(1.0 / x_ref_dm) @ fx
-            return ca.diag(float(t_ref) / x_ref_dm) @ fx
-
-        l_run_hat: Optional[Callable] = None
-        if self.l_run is not None:
-            def _l_run_hat(xh, uh, ph, t_hat_or_t_phys):
-                x, u, p, t = phys_from_scaled(xh, uh, ph, t_hat_or_t_phys)
-                assert self.l_run is not None
-                val = self.l_run(x, u, p, t)
-                # Integral in transcription is over t_hat -> convert dt_phys = t_ref dt_hat
-                if t_ref is None:
-                    return val
-                return float(t_ref) * val
-            l_run_hat = _l_run_hat
-
-        l_end_hat: Optional[Callable] = None
-        if self.l_end is not None:
-            def _l_end_hat(x0h, xfh, ph, t0_hat_in, tf_hat_in):
-                x0 = ca.diag(x_ref_dm) @ x0h
-                xf = ca.diag(x_ref_dm) @ xfh
-                p  = (ca.diag(p_ref_dm) @ ph) if self.n_p > 0 else ph
-
-                assert self.l_end is not None
-                if t_ref is None:
-                    t0p = t0_hat_in
-                    tfp = tf_hat_in
-                else:
-                    t0p = t0_phys
-                    tfp = t0_phys + float(t_ref) * tf_hat_in
-                return self.l_end(x0, xf, p, t0p, tfp)
-            l_end_hat = _l_end_hat
-
-        bnd_constr_hat: Optional[Callable[..., Any]] = None
-        if self.bnd_constr is not None:
-            def _bnd_constr_hat(x0h, xfh, ph, t0_hat_in, tf_hat_in):
-                x0 = ca.diag(x_ref_dm) @ x0h
-                xf = ca.diag(x_ref_dm) @ xfh
-                p  = (ca.diag(p_ref_dm) @ ph) if self.n_p > 0 else ph
-
-                assert self.bnd_constr is not None
-                if t_ref is None:
-                    t0p = t0_hat_in
-                    tfp = tf_hat_in
-                else:
-                    t0p = t0_phys
-                    tfp = t0_phys + float(t_ref) * tf_hat_in
-                return self.bnd_constr(x0, xf, p, t0p, tfp)
-            bnd_constr_hat = _bnd_constr_hat
-
-        path_constr_hat: Optional[Callable[..., Any]] = None
-        if self.path_constr is not None:
-            def _path_constr_hat(xh, uh, ph, t_hat_or_t_phys):
-                x, u, p, t = phys_from_scaled(xh, uh, ph, t_hat_or_t_phys)
-                assert self.path_constr is not None
-                return self.path_constr(x, u, p, t)
-            path_constr_hat = _path_constr_hat
-
-        state_constr_hat: Optional[Callable[..., Any]] = None
-        if self.state_constr is not None:
-            def _state_constr_hat(xh, ph, t_hat_or_t_phys):
-                # no u needed
-                x, _, p, t = phys_from_scaled(xh, ca.MX.zeros(self.n_u), ph, t_hat_or_t_phys)
-                assert self.state_constr is not None
-                return self.state_constr(x, p, t)
-            state_constr_hat = _state_constr_hat
-
-        def _scale_bounds(bounds, ref):
-            if bounds is None:
-                return None
-            lb, ub = bounds
-            return (np.asarray(lb, float).reshape(-1) / ref, np.asarray(ub, float).reshape(-1) / ref)
-
-        # scale tf if time-normalized
-        if t_ref is None:
-            tf_hat: TfSpec = self.tf
-        else:
-            if isinstance(self.tf, tuple):
-                lb, ub = self.tf
-                tf_hat = (float(lb) / float(t_ref), float(ub) / float(t_ref))
-            else:
-                tf_hat = float(self.tf) / float(t_ref)
+        scaled_callbacks = _make_scaled_callbacks(
+            self,
+            x_ref=x_ref,
+            u_ref=u_ref,
+            p_ref=p_ref,
+            t_ref=t_ref,
+            t0_phys=t0_phys,
+        )
+        tf_hat = _normalized_tf(self.tf, t_ref=t_ref)
 
         return OCP(
             n_x=self.n_x,
@@ -394,17 +426,17 @@ class OCP:
             n_p=self.n_p,
             t0=float(t0_hat),
             tf=tf_hat,
-            f_dyn=f_dyn_hat,
-            l_run=l_run_hat,
-            l_end=l_end_hat,
-            bnd_constr=bnd_constr_hat,
-            path_constr=path_constr_hat,
-            state_constr=state_constr_hat,
-            x_bounds=_scale_bounds(self.x_bounds, x_ref),
-            u_bounds=_scale_bounds(self.u_bounds, u_ref),
-            p_bounds=None if self.n_p == 0 else _scale_bounds(self.p_bounds, p_ref),
-            x0_fixed=None if self.x0_fixed is None else (self.x0_fixed / x_ref),
-            p0_guess=None if self.p0_guess is None else (self.p0_guess / p_ref),
+            f_dyn=scaled_callbacks["f_dyn"],
+            l_run=scaled_callbacks["l_run"],
+            l_end=scaled_callbacks["l_end"],
+            bnd_constr=scaled_callbacks["bnd_constr"],
+            path_constr=scaled_callbacks["path_constr"],
+            state_constr=scaled_callbacks["state_constr"],
+            x_bounds=_scale_bounds(self.x_bounds, ref=x_ref),
+            u_bounds=_scale_bounds(self.u_bounds, ref=u_ref),
+            p_bounds=None if self.n_p == 0 else _scale_bounds(self.p_bounds, ref=p_ref),
+            x0_fixed=_scale_optional_vector(self.x0_fixed, ref=x_ref),
+            p0_guess=None if self.n_p == 0 else _scale_optional_vector(self.p0_guess, ref=p_ref),
             scaling=scaling_hat,
         )
 

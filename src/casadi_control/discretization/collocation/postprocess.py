@@ -6,8 +6,10 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from ..base import DiscreteSolution, NLPLike, PostProcessed
+from .common import is_scaled_meta
 from .trajectory import CollocationPrimalTrajectory, CollocationDualTrajectory
 from .decode import (
+    CollocationMeta,
     CollocationDecoded,
     CollocationPrimalGrid,
     CollocationBoundKKT,
@@ -26,17 +28,11 @@ def _slice(w: np.ndarray, idx: Optional[Tuple[int, int]]) -> Optional[np.ndarray
         return None
     a, b = idx
     return w[a:b]
-
-
-def _is_scaled(meta: Dict[str, Any]) -> bool:
-    return str(meta.get("space", "physical")).lower() == "scaled"
-
-
-def _unpack_primal(meta: Dict[str, Any], named: Dict[str, Any]) -> CollocationPrimalGrid:
-    N = int(meta["N"])
-    K = int(meta["degree"])
-    nx = int(meta["n_x"])
-    nu = int(meta["n_u"])
+def _unpack_primal(meta: CollocationMeta, named: Dict[str, Any]) -> CollocationPrimalGrid:
+    N = meta.N
+    K = meta.K
+    nx = meta.n_x
+    nu = meta.n_u
 
     x_mesh = _np(named["X_mesh"]).reshape(N + 1, nx)
     x_colloc = _np(named["X_colloc"]).reshape(N, K, nx)
@@ -55,8 +51,8 @@ def _unpack_primal(meta: Dict[str, Any], named: Dict[str, Any]) -> CollocationPr
     )
 
 
-def _unscale_primal(primal_hat: CollocationPrimalGrid, meta: Dict[str, Any]) -> CollocationPrimalGrid:
-    s = meta.get("scaling", None)
+def _unscale_primal(primal_hat: CollocationPrimalGrid, meta: CollocationMeta) -> CollocationPrimalGrid:
+    s = meta.scaling
     if s is None:
         return primal_hat
 
@@ -86,11 +82,11 @@ def _unscale_primal(primal_hat: CollocationPrimalGrid, meta: Dict[str, Any]) -> 
     )
 
 
-def _unpack_kkt_multipliers(meta: Dict[str, Any], named: Dict[str, Any], mult_g: np.ndarray) -> CollocationKKTMultipliers:
-    cix = meta.get("con_index", {})
-    N = int(meta["N"])
-    K = int(meta["degree"])
-    nx = int(meta["n_x"])
+def _unpack_kkt_multipliers(meta: CollocationMeta, named: Dict[str, Any], mult_g: np.ndarray) -> CollocationKKTMultipliers:
+    cix = meta.con_index()
+    N = meta.N
+    K = meta.K
+    nx = meta.n_x
 
     t_mesh = _np(named["t_mesh"], squeeze=True).reshape(N + 1)
     t_colloc = _np(named["t_colloc"], squeeze=True).reshape(N, K)
@@ -98,36 +94,34 @@ def _unpack_kkt_multipliers(meta: Dict[str, Any], named: Dict[str, Any], mult_g:
 
     mult_g = _np(mult_g, squeeze=True).reshape(-1)
 
-    if cix.get("init") is not None:
-        a, b = cix["init"]
+    if cix.init is not None:
+        a, b = cix.init
         nu_init = mult_g[a:b]
     else:
         nu_init = np.zeros((nx,), dtype=float)
 
     nu_defect = np.zeros((N, K, nx), dtype=float)
-    if cix.get("defect") is not None:
-        for i in range(N):
-            for j in range(K):
-                a, b = cix["defect"][i][j]
-                nu_defect[i, j, :] = mult_g[a:b]
+    for i in range(N):
+        for j in range(K):
+            a, b = cix.defect[i][j]
+            nu_defect[i, j, :] = mult_g[a:b]
 
     nu_continuity = np.zeros((N, nx), dtype=float)
-    if cix.get("continuity") is not None:
-        for i in range(N):
-            a, b = cix["continuity"][i]
-            nu_continuity[i, :] = mult_g[a:b]
+    for i in range(N):
+        a, b = cix.continuity[i]
+        nu_continuity[i, :] = mult_g[a:b]
 
     nu_boundary = None
-    if cix.get("boundary") is not None:
-        a, b = cix["boundary"]
+    if cix.boundary is not None:
+        a, b = cix.boundary
         nu_boundary = mult_g[a:b].copy()
 
     nu_path = None
-    if cix.get("path") is not None:
+    if cix.path is not None:
         nc = None
         for i in range(N):
             for j in range(K):
-                ij = cix["path"][i][j]
+                ij = cix.path[i][j]
                 if ij is not None:
                     a, b = ij
                     nc = b - a
@@ -139,18 +133,18 @@ def _unpack_kkt_multipliers(meta: Dict[str, Any], named: Dict[str, Any], mult_g:
             nu_path = np.zeros((N, K, nc), dtype=float)
             for i in range(N):
                 for j in range(K):
-                    ij = cix["path"][i][j]
+                    ij = cix.path[i][j]
                     if ij is None:
                         continue
                     a, b = ij
                     nu_path[i, j, :] = mult_g[a:b]
 
     nu_state = None
-    if cix.get("state") is not None:
+    if cix.state is not None:
         ns = None
         for i in range(N):
             for j in range(K):
-                ij = cix["state"][i][j]
+                ij = cix.state[i][j]
                 if ij is not None:
                     a, b = ij
                     ns = b - a
@@ -162,7 +156,7 @@ def _unpack_kkt_multipliers(meta: Dict[str, Any], named: Dict[str, Any], mult_g:
             nu_state = np.zeros((N, K, ns), dtype=float)
             for i in range(N):
                 for j in range(K):
-                    ij = cix["state"][i][j]
+                    ij = cix.state[i][j]
                     if ij is None:
                         continue
                     a, b = ij
@@ -181,39 +175,39 @@ def _unpack_kkt_multipliers(meta: Dict[str, Any], named: Dict[str, Any], mult_g:
     )
 
 
-def _unpack_bound_kkt(meta: Dict[str, Any], mult_x: np.ndarray) -> CollocationBoundKKT:
-    vix = meta.get("var_index", {})
-    N = int(meta["N"])
-    K = int(meta["degree"])
-    nx = int(meta["n_x"])
-    nu = int(meta["n_u"])
+def _unpack_bound_kkt(meta: CollocationMeta, mult_x: np.ndarray) -> CollocationBoundKKT:
+    vix = meta.var_index()
+    N = meta.N
+    K = meta.K
+    nx = meta.n_x
+    nu = meta.n_u
 
     mult_x = np.asarray(mult_x, float).reshape(-1)
 
     signed_x_mesh = np.zeros((N + 1, nx), dtype=float)
-    for i, (a, b) in enumerate(vix.get("X_mesh", [])):
+    for i, (a, b) in enumerate(vix.X_mesh):
         signed_x_mesh[i, :] = mult_x[a:b]
 
     signed_x_colloc = np.zeros((N, K, nx), dtype=float)
     for i in range(N):
         for j in range(K):
-            a, b = vix["X_colloc"][i][j]
+            a, b = vix.X_colloc[i][j]
             signed_x_colloc[i, j, :] = mult_x[a:b]
 
     signed_u_colloc = np.zeros((N, K, nu), dtype=float)
     for i in range(N):
         for j in range(K):
-            a, b = vix["U_colloc"][i][j]
+            a, b = vix.U_colloc[i][j]
             signed_u_colloc[i, j, :] = mult_x[a:b]
 
     signed_tf = None
-    if vix.get("tf") is not None:
-        a, b = vix["tf"]
+    if vix.tf is not None:
+        a, b = vix.tf
         signed_tf = mult_x[a:b].copy()
 
     signed_p = None
-    if vix.get("p") is not None:
-        a, b = vix["p"]
+    if vix.p is not None:
+        a, b = vix.p
         signed_p = mult_x[a:b].copy()
 
     return CollocationBoundKKT(
@@ -225,8 +219,8 @@ def _unpack_bound_kkt(meta: Dict[str, Any], mult_x: np.ndarray) -> CollocationBo
     )
 
 
-def _unscale_bound_kkt(meta: Dict[str, Any], bound_hat: CollocationBoundKKT) -> CollocationBoundKKT:
-    s = meta.get("scaling", None)
+def _unscale_bound_kkt(meta: CollocationMeta, bound_hat: CollocationBoundKKT) -> CollocationBoundKKT:
+    s = meta.scaling
     if s is None:
         return bound_hat
 
@@ -265,8 +259,8 @@ def _unscale_bound_kkt(meta: Dict[str, Any], bound_hat: CollocationBoundKKT) -> 
     )
 
 
-def _unscale_kkt_multipliers(meta: Dict[str, Any], kkt_hat: CollocationKKTMultipliers) -> CollocationKKTMultipliers:
-    s = meta.get("scaling", None)
+def _unscale_kkt_multipliers(meta: CollocationMeta, kkt_hat: CollocationKKTMultipliers) -> CollocationKKTMultipliers:
+    s = meta.scaling
     if s is None:
         return kkt_hat
 
@@ -290,13 +284,13 @@ def _unscale_kkt_multipliers(meta: Dict[str, Any], kkt_hat: CollocationKKTMultip
 
 
 def _map_kkt_to_adjoint_grid(
-    meta: Dict[str, Any],
+    meta: CollocationMeta,
     kkt: CollocationKKTMultipliers, 
     bound_kkt: Optional[CollocationBoundKKT]=None,
 ) -> CollocationAdjointGrid:
-    N = int(meta["N"])
-    K = int(meta["degree"])
-    nx = int(meta["n_x"])
+    N = meta.N
+    K = meta.K
+    nx = meta.n_x
 
     nu_init = np.asarray(kkt.nu_init, float).reshape(nx)
     nu_cont = np.asarray(kkt.nu_continuity, float).reshape(N, nx)
@@ -305,7 +299,7 @@ def _map_kkt_to_adjoint_grid(
     nu_path = None if kkt.nu_path is None else np.asarray(kkt.nu_path, float)
     nu_state = None if kkt.nu_state is None else np.asarray(kkt.nu_state, float)
 
-    wq = _np(meta.get("quad_weights", []), squeeze=True).reshape(-1)
+    wq = _np(meta.meta.get("quad_weights", []), squeeze=True).reshape(-1)
     if wq.size == 0:
         raise RuntimeError("quad_weights missing in meta; cannot build costate mapping.")
     if wq.size != K:
@@ -351,54 +345,52 @@ def _map_kkt_to_adjoint_grid(
     )
 
 
-def _extract_residuals(meta: Dict[str, Any], gval: np.ndarray) -> Dict[str, np.ndarray]:
-    cix = meta.get("con_index", {})
-    N = int(meta["N"])
-    K = int(meta["degree"])
-    nx = int(meta["n_x"])
+def _extract_residuals(meta: CollocationMeta, gval: np.ndarray) -> Dict[str, np.ndarray]:
+    cix = meta.con_index()
+    N = meta.N
+    K = meta.K
+    nx = meta.n_x
 
     gval = _np(gval, squeeze=True).reshape(-1)
     out: Dict[str, np.ndarray] = {}
 
-    if cix.get("init") is not None:
-        a, b = cix["init"]
+    if cix.init is not None:
+        a, b = cix.init
         out["r_init"] = gval[a:b].copy()
 
-    if cix.get("defect") is not None:
-        r_defect = np.zeros((N, K, nx), dtype=float)
-        for i in range(N):
-            for j in range(K):
-                a, b = cix["defect"][i][j]
-                r_defect[i, j, :] = gval[a:b]
-        out["r_defect"] = r_defect
-        out["r_defect_inf"] = float(np.max(np.abs(r_defect)))
-        out["r_defect_l2"] = float(np.sqrt(np.mean(r_defect**2)))
+    r_defect = np.zeros((N, K, nx), dtype=float)
+    for i in range(N):
+        for j in range(K):
+            a, b = cix.defect[i][j]
+            r_defect[i, j, :] = gval[a:b]
+    out["r_defect"] = r_defect
+    out["r_defect_inf"] = float(np.max(np.abs(r_defect)))
+    out["r_defect_l2"] = float(np.sqrt(np.mean(r_defect**2)))
 
-    if cix.get("continuity") is not None:
-        r_continuity = np.zeros((N, nx), dtype=float)
-        for i in range(N):
-            a, b = cix["continuity"][i]
-            r_continuity[i, :] = gval[a:b]
-        out["r_continuity"] = r_continuity
-        out["r_continuity_inf"] = float(np.max(np.abs(r_continuity)))
+    r_continuity = np.zeros((N, nx), dtype=float)
+    for i in range(N):
+        a, b = cix.continuity[i]
+        r_continuity[i, :] = gval[a:b]
+    out["r_continuity"] = r_continuity
+    out["r_continuity_inf"] = float(np.max(np.abs(r_continuity)))
 
-    if cix.get("boundary") is not None:
-        a, b = cix["boundary"]
+    if cix.boundary is not None:
+        a, b = cix.boundary
         out["r_boundary"] = gval[a:b].copy()
 
     return out
 
 
 def postprocess_collocation(ocp: Any, nlp: NLPLike, sol: DiscreteSolution) -> PostProcessed:
-    meta = nlp.meta or {}
-    layout = meta["layout"]
+    meta = CollocationMeta(nlp.meta or {})
+    layout = meta.layout
 
     named = nlp.unpack(sol.w_opt)
 
     primal_scaled = _unpack_primal(meta, named)
-    primal = _unscale_primal(primal_scaled, meta) if _is_scaled(meta) else primal_scaled
+    primal = _unscale_primal(primal_scaled, meta) if is_scaled_meta(meta) else primal_scaled
 
-    tau = np.asarray(meta.get("tau", []), float).reshape(-1)
+    tau = np.asarray(meta.tau, float).reshape(-1)
     s_mesh = np.asarray(layout.s_mesh, float).reshape(-1)
 
     traj = CollocationPrimalTrajectory(
@@ -413,15 +405,15 @@ def postprocess_collocation(ocp: Any, nlp: NLPLike, sol: DiscreteSolution) -> Po
     bound_kkt = None
     if sol.mult_x is not None:
         bound_kkt_scaled = _unpack_bound_kkt(meta, sol.mult_x)
-        bound_kkt = _unscale_bound_kkt(meta, bound_kkt_scaled) if _is_scaled(meta) else bound_kkt_scaled
+        bound_kkt = _unscale_bound_kkt(meta, bound_kkt_scaled) if is_scaled_meta(meta) else bound_kkt_scaled
 
     kkt_scaled = None
     kkt = None
     adjoint = None
     dual_traj = None
-    if sol.mult_g is not None and meta.get("con_index") is not None:
+    if sol.mult_g is not None:
         kkt_scaled = _unpack_kkt_multipliers(meta, named, sol.mult_g)
-        kkt = _unscale_kkt_multipliers(meta, kkt_scaled) if _is_scaled(meta) else kkt_scaled
+        kkt = _unscale_kkt_multipliers(meta, kkt_scaled) if is_scaled_meta(meta) else kkt_scaled
         adjoint = _map_kkt_to_adjoint_grid(meta, kkt, bound_kkt)
 
         dual_traj = CollocationDualTrajectory(
@@ -435,25 +427,25 @@ def postprocess_collocation(ocp: Any, nlp: NLPLike, sol: DiscreteSolution) -> Po
     decoded = CollocationDecoded(
         layout=layout,
         primal=primal,
-        primal_scaled=primal_scaled if _is_scaled(meta) else None,
+        primal_scaled=primal_scaled if is_scaled_meta(meta) else None,
         kkt=kkt,
-        kkt_scaled=kkt_scaled if _is_scaled(meta) else None,
+        kkt_scaled=kkt_scaled if is_scaled_meta(meta) else None,
         bound_kkt=bound_kkt,
-        bound_kkt_scaled=bound_kkt_scaled if _is_scaled(meta) else None,
+        bound_kkt_scaled=bound_kkt_scaled if is_scaled_meta(meta) else None,
         adjoint=adjoint,
     )
 
     diag: Dict[str, Any] = {
         "tf": float(primal.tf),
-        "N": int(meta["N"]),
-        "degree": int(meta["degree"]),
+        "N": meta.N,
+        "degree": meta.K,
         "tau": tau,
         "s_mesh": s_mesh,
-        "n_x": int(meta["n_x"]),
-        "n_u": int(meta["n_u"]),
-        "space": meta.get("space", "physical"),
-        "bounds_phys": meta.get("bounds_phys", {}),
-        "bounds_ocp": meta.get("bounds_ocp", {}),
+        "n_x": meta.n_x,
+        "n_u": meta.n_u,
+        "space": meta.space,
+        "bounds_phys": meta.bounds_phys,
+        "bounds_ocp": meta.bounds_ocp,
     }
 
     try:

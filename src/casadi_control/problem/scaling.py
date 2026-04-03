@@ -12,28 +12,7 @@ from typing import Any, Optional, Tuple, Literal
 
 import numpy as np
 
-
-def _as_1d_array(x):
-    """Convert scalar-like input to a one-dimensional float array."""
-    if x is None:
-        return None
-    arr = np.atleast_1d(np.asarray(x, dtype=float))
-    if arr.ndim != 1:
-        raise ValueError(f"Expected 1D array or scalar, got shape {arr.shape}")
-    return arr
-
-def _as_pos_1d_array(x, *, name: str, floor: float) -> Optional[np.ndarray]:
-    """Convert input to positive 1D float array with optional lower clipping."""
-    arr = _as_1d_array(x)
-    if arr is None:
-        return None
-    if not np.all(np.isfinite(arr)):
-        raise ValueError(f"{name} must be finite")
-    if np.any(arr <= 0.0):
-        raise ValueError(f"{name} must be strictly positive; got min={arr.min()}")
-    if floor is not None and floor > 0:
-        arr = np.maximum(arr, float(floor))
-    return arr
+from .._array_utils import as_positive_optional_1d_float_array
 
 
 @dataclass(frozen=True)
@@ -116,9 +95,9 @@ class Scaling:
 
     def __post_init__(self):
         # variable refs: must be positive if provided
-        object.__setattr__(self, "x_ref", _as_pos_1d_array(self.x_ref, name="x_ref", floor=self.floor))
-        object.__setattr__(self, "u_ref", _as_pos_1d_array(self.u_ref, name="u_ref", floor=self.floor))
-        object.__setattr__(self, "p_ref", _as_pos_1d_array(self.p_ref, name="p_ref", floor=self.floor))
+        object.__setattr__(self, "x_ref", as_positive_optional_1d_float_array(self.x_ref, name="x_ref", floor=self.floor))
+        object.__setattr__(self, "u_ref", as_positive_optional_1d_float_array(self.u_ref, name="u_ref", floor=self.floor))
+        object.__setattr__(self, "p_ref", as_positive_optional_1d_float_array(self.p_ref, name="p_ref", floor=self.floor))
 
         # time
         if self.t_ref is not None:
@@ -140,10 +119,10 @@ class Scaling:
             object.__setattr__(self, "J_ref", J)
 
         # constraint refs (allow None; if provided must be positive)
-        object.__setattr__(self, "defect_ref", _as_pos_1d_array(self.defect_ref, name="defect_ref", floor=self.floor))
-        object.__setattr__(self, "path_ref", _as_pos_1d_array(self.path_ref, name="path_ref", floor=self.floor))
-        object.__setattr__(self, "state_ref", _as_pos_1d_array(self.state_ref, name="state_ref", floor=self.floor))
-        object.__setattr__(self, "bnd_ref", _as_pos_1d_array(self.bnd_ref, name="bnd_ref", floor=self.floor))
+        object.__setattr__(self, "defect_ref", as_positive_optional_1d_float_array(self.defect_ref, name="defect_ref", floor=self.floor))
+        object.__setattr__(self, "path_ref", as_positive_optional_1d_float_array(self.path_ref, name="path_ref", floor=self.floor))
+        object.__setattr__(self, "state_ref", as_positive_optional_1d_float_array(self.state_ref, name="state_ref", floor=self.floor))
+        object.__setattr__(self, "bnd_ref", as_positive_optional_1d_float_array(self.bnd_ref, name="bnd_ref", floor=self.floor))
 
         if self.space not in ("physical", "scaled"):
             raise ValueError("space must be 'physical' or 'scaled'")

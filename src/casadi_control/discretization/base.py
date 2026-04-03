@@ -188,6 +188,17 @@ class Guess:
     Notes
     -----
     Arrays are stored as one-dimensional ``float`` vectors.
+
+    This object is the handoff between a discretization and a solver. Most
+    workflows obtain a guess from :meth:`Discretization.guess`, but advanced
+    users can also build a :class:`Guess` directly and pass it to
+    :func:`casadi_control.solve` or a lower-level solver adapter.
+
+    Typical usage patterns are:
+
+    - start from the discretization default ``nlp.w0``
+    - overwrite selected blocks of the decision vector
+    - warm-start a repeated solve using ``mult_x0`` and ``mult_g0``
     """
 
     w0: Array
@@ -274,19 +285,45 @@ class DualTrajectory(Protocol):
 
 @dataclass
 class PostProcessed:
-    """
-    Scheme-agnostic postprocessing result.
+    """Scheme-agnostic postprocessing result.
 
     Parameters
     ----------
     traj
-        Continuous primal evaluator.
+        Continuous primal evaluator. Use :meth:`x` and :meth:`u` for the most
+        common evaluation path.
     dual_traj
         Continuous dual evaluator, if available.
     decoded
-        Scheme-specific decoded discrete payload.
+        Scheme-specific decoded discrete payload. This is useful when you need
+        mesh-level arrays, collocation-node values, or other discretization
+        details in addition to evaluator-style access.
     diag
         Free-form diagnostics.
+
+    Notes
+    -----
+    :class:`PostProcessed` is the main analysis object returned after solving.
+    It is designed so that most downstream code can stay independent of the
+    underlying transcription:
+
+    - call :meth:`x(t)` and :meth:`u(t)` to evaluate the primal solution
+    - inspect ``diag`` for mesh, degree, residual, and solver summary data
+    - use ``decoded`` when you need discretization-specific arrays for plotting,
+      debugging, or custom postprocessing
+
+    Think of ``decoded`` as the structured, grid-level companion to the
+    evaluator-style ``traj`` object. Where ``traj`` answers "what is x(t)?",
+    ``decoded`` answers questions like:
+
+    - what are the state and control values at mesh and collocation nodes?
+    - what normalized mesh and collocation table were used?
+    - what raw NLP multipliers did the solver return?
+    - what interpreted dual quantities were reconstructed during postprocessing?
+
+    If dual information is available, :meth:`costate`,
+    :meth:`path_multiplier`, and :meth:`state_multiplier` provide the same
+    evaluator-style interface for interpreted dual trajectories.
     """
 
     traj: Trajectory
@@ -340,6 +377,18 @@ class SolutionArtifact:
     --------
     - ``arrays`` contains only numpy arrays (or empty arrays for missing data).
     - ``meta`` is JSON-serializable and should remain small.
+
+    Notes
+    -----
+    A :class:`SolutionArtifact` is the portable representation you save to disk
+    after a solve and later reload for plotting, comparison, or warm-start
+    preparation. The usual pattern is:
+
+    1. solve and postprocess an OCP
+    2. call :meth:`Discretization.to_artifact`
+    3. persist the artifact with a discretization-specific I/O helper
+    4. reload it later and reconstruct :class:`PostProcessed` with
+       :meth:`Discretization.from_artifact`
     """
 
     discretization: str
@@ -361,13 +410,28 @@ class Discretization(ABC):
     - providing (optional) scheme-specific initial guesses (:meth:`guess`)
     - postprocessing raw solver output into evaluator-style trajectories (:meth:`postprocess`)
     - exporting/importing artifacts for reproducibility (:meth:`to_artifact`, :meth:`from_artifact`)
+
+    In practice, the public workflow is:
+
+    1. construct a discretization
+    2. call :meth:`build` to obtain an :class:`NLP`
+    3. optionally customize the initial guess with :meth:`guess`
+    4. solve the NLP with a solver adapter
+    5. call :meth:`postprocess` to obtain a :class:`PostProcessed` result
+    6. optionally save/reload the result with :meth:`to_artifact` and
+       :meth:`from_artifact`
     """
 
     name: str
 
     @abstractmethod
     def build(self, ocp: "OCP") -> NLP:
-        """Transcribe the continuous-time OCP into a solver-facing NLP."""
+        """Transcribe the continuous-time OCP into a solver-facing NLP.
+
+        The returned :class:`NLP` contains the CasADi problem dictionary, the
+        bounds and default guess vectors expected by the solver, and metadata
+        needed for decoding and postprocessing.
+        """
         raise NotImplementedError
 
     def guess(
@@ -382,23 +446,75 @@ class Discretization(ABC):
 
         Discretizations may override this method to implement IVP rollouts,
         interpolation from previous solutions, continuation schedules, etc.
+
+        Parameters
+        ----------
+        nlp : NLPLike
+            NLP previously produced by :meth:`build`.
+        strategy : str, optional
+            Discretization-defined strategy name. The base implementation simply
+            returns ``nlp.w0``.
+        prev : Trajectory, optional
+            Previous postprocessed trajectory used for continuation or mesh
+            refinement.
+        **kwargs
+            Extra strategy-specific options.
+
+        Returns
+        -------
+        Guess
+            Initial decision vector and optional warm-start multipliers.
+
+        Notes
+        -----
+        If you do not need a custom strategy, passing the returned
+        :class:`Guess` directly to a solver is sufficient. For repeated solves,
+        discretizations may accept ``prev`` plus scheme-specific keyword
+        arguments to interpolate an earlier solution onto the new mesh.
         """
         info = {"strategy": strategy, "used_prev": prev is not None}
         return Guess(w0=np.asarray(nlp.w0, float).reshape(-1), info=info)
 
     @abstractmethod
     def postprocess(self, ocp: "OCP", nlp: NLPLike, sol: DiscreteSolution) -> PostProcessed:
-        """Decode raw solver output into a postprocessed trajectory interface."""
+        """Decode raw solver output into a postprocessed trajectory interface.
+
+        Parameters
+        ----------
+        ocp : OCP
+            Original problem definition.
+        nlp : NLPLike
+            NLP that was solved.
+        sol : DiscreteSolution
+            Raw solver output.
+
+        Returns
+        -------
+        PostProcessed
+            Evaluator-style primal/dual trajectories, decoded arrays, and
+            diagnostics suitable for analysis, plotting, and artifact export.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def to_artifact(self, sol: DiscreteSolution, pp: PostProcessed) -> SolutionArtifact:
-        """Convert a solved result into a serializable artifact."""
+        """Convert a solved result into a serializable artifact.
+
+        This method packages the information needed to reconstruct a
+        :class:`PostProcessed` result without keeping the original solver
+        objects alive. Persist the returned artifact with an appropriate helper
+        for the concrete discretization.
+        """
         raise NotImplementedError(f"{type(self).__name__} does not implement to_artifact().")
 
     @abstractmethod
     def from_artifact(self, art: SolutionArtifact) -> PostProcessed:
-        """Rebuild a plot-ready postprocessed result from an artifact."""
+        """Rebuild a plot-ready postprocessed result from an artifact.
+
+        This is the inverse of :meth:`to_artifact`. It is intended for
+        workflows where a solved result is saved, transferred, or versioned and
+        later reloaded for plotting or comparison.
+        """
         raise NotImplementedError(f"{type(self).__name__} does not implement from_artifact().")
 
 

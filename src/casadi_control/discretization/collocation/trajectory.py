@@ -11,6 +11,7 @@ from typing import Optional
 import numpy as np
 
 from ..base import Array, TimeLike, Trajectory, DualTrajectory
+from .common import validate_s_mesh
 from .decode import CollocationPrimalGrid, CollocationAdjointGrid
 
 
@@ -69,22 +70,6 @@ def _barycentric_eval(nodes: Array, w: Array, vals: Array, xq: Array) -> Array:
         out[i, :] = numer / denom
 
     return out
-
-
-# =============================================================================
-# Mesh helpers
-# =============================================================================
-
-def _validate_s_mesh(s_mesh: np.ndarray, *, N: int) -> np.ndarray:
-    """Validate mesh size, monotonicity, and [0, 1] endpoint convention."""
-    s = np.asarray(s_mesh, float).reshape(-1)
-    if s.size != N + 1:
-        raise ValueError(f"s_mesh must have length N+1={N+1}, got {s.size}")
-    if not np.all(np.diff(s) > 0.0):
-        raise ValueError("s_mesh must be strictly increasing")
-    if abs(float(s[0]) - 0.0) > 1e-10 or abs(float(s[-1]) - 1.0) > 1e-10:
-        raise ValueError("s_mesh must start at 0 and end at 1 (within tolerance)")
-    return s
 
 
 def _uniform_s_mesh(N: int) -> np.ndarray:
@@ -203,7 +188,7 @@ class CollocationPrimalTrajectory(Trajectory):
         else:
             s_mesh_arr = np.asarray(s_mesh, float).reshape(-1)
 
-        self.s_mesh = _validate_s_mesh(s_mesh_arr, N=N)
+        self.s_mesh = validate_s_mesh(s_mesh_arr, expected_size=N + 1)
 
         self._tau_x = self.tau
         self._w_x = _barycentric_weights(self._tau_x)
@@ -299,7 +284,7 @@ class CollocationDualTrajectory(DualTrajectory):
         else:
             s_mesh_arr = np.asarray(s_mesh, float).reshape(-1)
 
-        self.s_mesh = _validate_s_mesh(s_mesh_arr, N=N)
+        self.s_mesh = validate_s_mesh(s_mesh_arr, expected_size=N + 1)
 
         self._tau_costate = self.tau
         self._w_costate = _barycentric_weights(self._tau_costate)

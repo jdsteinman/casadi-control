@@ -1,20 +1,55 @@
-# examples/hager_lq_ocp.py
-"""
-Example adapted from Hager (2000), Numerische Mathematik, 87:247–282.
+# ---
+# jupyter:
+#   jupytext:
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.18.1
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
 
-    minimize_{x(·), u(·)}
-        J = ∫_0^1 ( x(t)^2 + 1/2 * u(t)^2 ) dt
+# %% [markdown]
+# # Hager Linear-Quadratic Example
 
-    subject to
-        x'(t) = 1/2 * x(t) + u(t),    t ∈ [0, 1],
-        x(0)  = 1.
+# %% [raw] raw_mimetype="text/restructuredtext"
+# This notebook solves Problem 1 from :cite:p:`hager1976`.
 
-The optimal state, control, and costate are
-
-    x*(t) =  ( 2 e^{3t} + e^{3} ) / ( 2 e^{3/2} + e^3 )
-    u*(t) =  2 ( e^{3t} − e^{3} ) / ( 2 e^{3/2} + e^3 )
-    λ*(t) = -2 ( e^{3t} - e^{3} ) / ( 2 e^{3/2} + e^3 )
-"""
+# %% [markdown]
+# The continuous-time problem is
+#
+# $$
+# \begin{aligned}
+# \min_{x(\cdot),u(\cdot)} \quad &
+# \int_0^1 \left(x(t)^2 + \tfrac{1}{2}u(t)^2\right)\,dt \\
+# \text{s.t.}\quad &
+# \dot{x}(t) = \tfrac{1}{2}x(t) + u(t), \qquad t \in [0,1], \\
+# & x(0)=1.
+# \end{aligned}
+# $$
+#
+# The exact solution is
+#
+# $$
+# x^\star(t)=\frac{2e^{3t}+e^3}{(2e^{3/2}+e^3)e^{3t/2}}, \qquad
+# u^\star(t)=\frac{2(e^{3t}-e^3)}{(2e^{3/2}+e^3)e^{3t/2}},
+# $$
+#
+# and the corresponding costate is
+#
+# $$
+# \lambda^\star(t)=\frac{2(-e^{3t}+e^3)}{(2e^{3/2}+e^3)e^{3t/2}}.
+# $$
+#
+# We solve the problem with direct collocation and compare the numerical
+# state, control, and costate trajectories with these analytical
+# expressions.
+#
+# %%
 from __future__ import annotations
 
 import numpy as np
@@ -25,13 +60,7 @@ from casadi_control.discretization import DirectCollocation
 from casadi_control.solvers import solve_ipopt
 
 
-# =============================================================================
-# Problem definition
-# =============================================================================
-
 def build_lq_ocp() -> OCP:
-    n_x, n_u = 1, 1
-
     def f_dyn(x, u, p, t):
         return 0.5 * x + u
 
@@ -42,8 +71,8 @@ def build_lq_ocp() -> OCP:
         return 0.0
 
     return OCP(
-        n_x=n_x,
-        n_u=n_u,
+        n_x=1,
+        n_u=1,
         n_p=0,
         t0=0.0,
         tf=1.0,
@@ -56,10 +85,6 @@ def build_lq_ocp() -> OCP:
     )
 
 
-# =============================================================================
-# Analytical solution
-# =============================================================================
-
 def analytical_solution(t):
     t = np.asarray(t, float)
     denom = np.exp(3 * t / 2) * (2 + np.exp(3))
@@ -69,113 +94,70 @@ def analytical_solution(t):
     return x, u, lam
 
 
-# =============================================================================
-# Main
-# =============================================================================
+# %% [markdown]
+# ## Build, scale, and discretize the OCP
 
-def main(
-    grid = None,
-    N: int = 40,
-    degree: int = 3,
-) -> None:
-    # -------------------------------------------------------------------------
-    # Build and (optionally) scale the OCP
-    # -------------------------------------------------------------------------
-    ocp = build_lq_ocp()
+# %%
+ocp = build_lq_ocp()
+scaling = Scaling(x_ref=[2.0], u_ref=[0.5], t_ref=2.0, J_ref=2.0)
+ocp_scaled = ocp.scaled(scaling)
 
-    scaling = Scaling(x_ref=2.0, u_ref=0.5, t_ref=2.0, J_ref=2.0)
-    ocp_scaled = ocp.scaled(scaling)
+tx = DirectCollocation(N=40, degree=3, scheme="flgr")
+nlp = tx.build(ocp_scaled)
 
-    # -------------------------------------------------------------------------
-    # Discretize (new options: control strategy + optional penalties)
-    # -------------------------------------------------------------------------
-    if grid is not None:
-        tx = DirectCollocation(
-            grid=grid,
-            degree=degree,
-        )
-    elif N is not None:
-        tx = DirectCollocation(
-            N=N,
-            degree=degree,
-        )
-    else:
-        raise ValueError("Must supply grid points or num. intervals")
-    nlp = tx.build(ocp_scaled)
+# %% [markdown]
+# ## Solve and postprocess
 
-    # -------------------------------------------------------------------------
-    # Solve
-    # -------------------------------------------------------------------------
-    sol = solve_ipopt(nlp)
+# %%
+sol = solve_ipopt(nlp)
+pp = tx.postprocess(ocp, nlp, sol)
 
-    # Postprocess in physical units (important: pass the physical OCP here)
-    pp = tx.postprocess(ocp, nlp, sol)
+t_nodes = pp.decoded.primal.t_nodes
+t_col = pp.decoded.primal.t_colloc.reshape(-1)
 
-    # =============================================================================
-    # Numerical trajectories
-    # =============================================================================
-    t_nodes = pp.decoded.primal.t_nodes
-    x_num = pp.x(t_nodes).reshape(-1)
-    lam_num = pp.costate(t_nodes).reshape(-1)
+x_num = pp.x(t_nodes).reshape(-1)
+u_num = pp.u(t_col).reshape(-1)
+lam_num = pp.costate(t_nodes).reshape(-1)
 
-    # For control, sample on collocation times (and mesh times if ZOH is used)
-    t_col = pp.decoded.primal.t_colloc.reshape(-1)
-    u_num_col = pp.u(t_col).reshape(-1)
+x_exact, _, lam_exact = analytical_solution(t_nodes)
+_, u_exact, _ = analytical_solution(t_col)
 
-    # =============================================================================
-    # Analytical trajectories
-    # =============================================================================
-    x_exact, _, lam_exact = analytical_solution(t_nodes)
-    _, u_exact_col, _ = analytical_solution(t_col)
+err_x = np.linalg.norm(x_num - x_exact, np.inf)
+err_u = np.linalg.norm(u_num - u_exact, np.inf)
+err_lam = np.linalg.norm(lam_num - lam_exact, np.inf)
 
-    # =============================================================================
-    # Errors (∞-norm on sampling grids)
-    # =============================================================================
-    err_x = np.linalg.norm(x_num - x_exact, np.inf)
-    err_u = np.linalg.norm(u_num_col - u_exact_col, np.inf)
-    err_lam = np.linalg.norm(lam_num - lam_exact, np.inf)
+print(f"||x_num - x_exact||_inf   = {err_x:.3e}")
+print(f"||u_num - u_exact||_inf   = {err_u:.3e}")
+print(f"||lam_num - lam_exact||_inf = {err_lam:.3e}")
 
-    print(f"||x_num - x_exact||_inf   = {err_x:.3e}")
-    print(f"||u_num - u_exact||_inf   = {err_u:.3e}   (evaluated at collocation times)")
-    print(f"||lam_num - lam_exact||_inf = {err_lam:.3e}")
+# %% [markdown]
+# ## Plot the trajectories
 
-    # =============================================================================
-    # Plots
-    # =============================================================================
-    plt.figure(figsize=(6, 4))
-    plt.plot(t_nodes, x_num, "-", label="numerical")
-    plt.plot(t_nodes, x_exact, "--", label="analytical")
-    plt.xlabel(r"$t$")
-    plt.ylabel(r"$x(t)$")
-    plt.title("State")
-    plt.legend()
-    plt.grid(True)
+# %%
+fig, axes = plt.subplots(3, 1, figsize=(7, 10), constrained_layout=True)
 
-    plt.figure(figsize=(6, 4))
-    plt.plot(t_col, u_num_col, "-", label="numerical (collocation times)")
-    plt.plot(t_col, u_exact_col, "--", label="analytical (collocation times)")
-    plt.xlabel(r"$t$")
-    plt.ylabel(r"$u(t)$")
-    plt.title("Control")
-    plt.legend()
-    plt.grid(True)
+axes[0].plot(t_nodes, x_num, "-", label="numerical")
+axes[0].plot(t_nodes, x_exact, "--", label="analytical")
+axes[0].set_xlabel("t")
+axes[0].set_ylabel("x(t)")
+axes[0].set_title("State")
+axes[0].grid(True)
+axes[0].legend()
 
-    plt.figure(figsize=(6, 4))
-    plt.plot(t_nodes, lam_num, "-", label="numerical")
-    plt.plot(t_nodes, lam_exact, "--", label="analytical")
-    plt.xlabel(r"$t$")
-    plt.ylabel(r"$\lambda(t)$")
-    plt.title("Costate")
-    plt.legend()
-    plt.grid(True)
+axes[1].plot(t_col, u_num, "-", label="numerical")
+axes[1].plot(t_col, u_exact, "--", label="analytical")
+axes[1].set_xlabel("t")
+axes[1].set_ylabel("u(t)")
+axes[1].set_title("Control")
+axes[1].grid(True)
+axes[1].legend()
 
-    plt.show()
+axes[2].plot(t_nodes, lam_num, "-", label="numerical")
+axes[2].plot(t_nodes, lam_exact, "--", label="analytical")
+axes[2].set_xlabel("t")
+axes[2].set_ylabel("lambda(t)")
+axes[2].set_title("Costate")
+axes[2].grid(True)
+axes[2].legend()
 
-
-if __name__ == "__main__":
-    N = 100
-    x = np.array([np.cos(k*np.pi/N) for k in range(N+1)])
-    x = (x + 1) / 2
-    x = np.flip(x)
-    main(grid=x, degree=3)
-#    main(N=N, degree=3)
+plt.show()

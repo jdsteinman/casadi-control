@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import casadi as ca
 
+from .._array_utils import as_sized_1d_float_vector
 from ..discretization.base import Guess, NLPLike, DiscreteSolution
 from .options import IpoptOptions
 
@@ -50,16 +51,6 @@ DEFAULT_IPOPT_OPTS: Dict[str, Any] = {
 #    "slack_bound_push": 1e-8,
 #    "slack_bound_frac": 1e-8,
 }
-
-
-def _as_vec(x: Any, n: int, name: str) -> np.ndarray:
-    """Coerce input to a flat vector of fixed length."""
-    v = np.asarray(x, float).reshape(-1)
-    if v.size != n:
-        raise ValueError(f"{name} has size {v.size}, expected {n}")
-    return v
-
-
 def _status_from_stats(stats: Dict[str, Any]) -> str:
     """Extract a stable status string from CasADi/IPOPT stats."""
     if not stats:
@@ -209,7 +200,7 @@ def solve_ipopt(
         mult_g0 = guess.mult_g0
         guess_info = dict(guess.info or {})
 
-    w0 = _as_vec(w0, int(nlp.n_w), "w0")
+    w0 = as_sized_1d_float_vector(w0, int(nlp.n_w), name="w0")
 
     # --- build solver options
     opts = _merge_opts(casadi_opts=casadi_opts, ipopt_opts=ipopt_opts, legacy_options=options)
@@ -236,9 +227,9 @@ def solve_ipopt(
     }
 
     if mult_x0 is not None:
-        arg["lam_x0"] = _as_vec(mult_x0, int(nlp.n_w), "lam_x0")
+        arg["lam_x0"] = as_sized_1d_float_vector(mult_x0, int(nlp.n_w), name="lam_x0")
     if mult_g0 is not None:
-        arg["lam_g0"] = _as_vec(mult_g0, int(nlp.n_g), "lam_g0")
+        arg["lam_g0"] = as_sized_1d_float_vector(mult_g0, int(nlp.n_g), name="lam_g0")
 
     # --- solve
     res = solver(**arg)

@@ -1,42 +1,53 @@
 # casadi-control
 
-Python tools for formulating and solving continuous-time optimal control
-problems with CasADi.
+`casadi-control` is a Python library for formulating, discretizing, and
+solving continuous-time optimal control problems with
+[CasADi](https://web.casadi.org/).
+
+It provides a compact workflow for:
+
+- defining optimal control problems with clear callback-based APIs
+- transcribing those problems with direct collocation
+- solving the resulting nonlinear programs with IPOPT
+- postprocessing primal and dual trajectories for analysis and plotting
+
+The project includes worked examples, Sphinx documentation, and a small
+high-level solve API for standard end-to-end workflows.
 
 ## Requirements
 
-- Python 3.10+
-- `pip` (or another PEP 517-compatible installer)
+- Python 3.10 or newer
+- `pip` or another PEP 517-compatible installer
 
 ## Installation
 
-Install the package:
+Clone the repository and install the package from the project root:
 
 ```bash
 pip install .
 ```
 
-For local development (editable install):
+For local development, use an editable install:
 
 ```bash
 pip install -e .
 ```
 
-Verify the install:
+To verify the installation:
 
 ```bash
-python -c "import casadi_control; print('casadi_control imported successfully')"
+python -c "import casadi_control; print(casadi_control.__all__[:3])"
 ```
 
-## Optional dependency groups
+### Optional dependency groups
 
-Install extras based on what you need:
+Install the extra dependencies that match your workflow:
 
-- Tests:
+- Test suite:
   ```bash
   pip install -e ".[test]"
   ```
-- Examples (plotting):
+- Examples and plotting:
   ```bash
   pip install -e ".[examples]"
   ```
@@ -44,34 +55,92 @@ Install extras based on what you need:
   ```bash
   pip install -e ".[docs]"
   ```
-- Full development setup:
+- Full development environment:
   ```bash
   pip install -e ".[dev]"
   ```
 
-## Running tests
+## Quick start
+
+The package centers around three concepts:
+
+1. `OCP` for defining a continuous-time optimal control problem
+2. a discretization such as `DirectCollocation`
+3. a solver step, typically via `solve(...)` or `solve_ipopt(...)`
+
+```python
+from casadi_control import OCP, DirectCollocation, solve
+
+# Define the problem callbacks and dimensions in OCP(...)
+ocp = OCP(...)
+
+tx = DirectCollocation(N=40, degree=3, scheme="flgr")
+result = solve(ocp, tx)
+
+sol = result.sol
+pp = result.pp
+```
+
+For a complete example, start with
+[`examples/hager_lq_ocp.py`](examples/hager_lq_ocp.py).
+
+## Examples
+
+The repository includes worked examples in [`examples/`](examples/):
+
+- `hager_lq_ocp.py` solves a linear-quadratic benchmark and compares the
+  numerical solution against the analytical one.
+- `hager_hou_rao_ocp.py` demonstrates a more general benchmark problem.
+
+Run them directly from the repository root:
+
+```bash
+python examples/hager_lq_ocp.py
+python examples/hager_hou_rao_ocp.py
+```
+
+The example notebooks are tracked as Jupytext pairs. Edit the `.py` source,
+then synchronize the notebooks with:
+
+```bash
+make sync-examples
+```
+
+Or sync individual examples:
+
+```bash
+make sync-example-lq
+make sync-example-hhr
+```
+
+## Development
+
+Common project tasks are exposed through the top-level `Makefile`:
+
+```bash
+make install-dev
+make test
+make docs
+```
+
+You can also run the test suite directly:
 
 ```bash
 pytest -q
 ```
 
-## Running examples
+## Documentation
 
-Run scripts in `examples/`, for example:
-
-```bash
-python examples/hager_lq_ocp.py
-python examples/hager_hao_rao_ocp.py
-```
-
-## Building documentation
-
-From the repository root:
+Build the Sphinx documentation from the repository root with:
 
 ```bash
 pip install -e ".[docs]"
 make -C doc html
 ```
 
-Built docs will be in `doc/build/html/index.html`.
+The built site will be available at `doc/build/html/index.html`.
 
+## Project links
+
+- Repository: <https://github.com/jdsteinman/casadi-control>
+- Issue tracker: <https://github.com/jdsteinman/casadi-control/issues>

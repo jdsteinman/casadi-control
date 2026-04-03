@@ -8,3 +8,5 @@ Collocation
    :toctree: generated
 
    DirectCollocation
+   save_npz
+   load_npz

@@ -7,8 +7,8 @@ CasADi-Control
 **Date**: |today| **Version**: |version|
 
 **Useful links**:
-`Source Repository <https://github.com/YOUR_ORG_OR_YOU/casadi-control>`__ |
-`Issues <https://github.com/YOUR_ORG_OR_YOU/casadi-control/issues>`__
+`Source Repository <https://github.com/jdsteinman/casadi-control>`__ |
+`Issues <https://github.com/jdsteinman/casadi-control/issues>`__
 
 CasADi-Control is a Python library for formulating and solving continuous-time
 optimal control problems using CasADi-based nonlinear programming.
@@ -16,10 +16,10 @@ optimal control problems using CasADi-based nonlinear programming.
 The library provides:
 
 * A structured representation of optimal control problems
-* Direct transcription methods (collocation)
-* Solver interfaces
+* Direct collocation transcription
+* Solver integration for nonlinear programs
 * Artifact storage and warm-start support
-* Tools for postprocessing and visualization
+* Postprocessing tools for trajectory and multiplier analysis
 
 
 .. grid:: 1 1 2 2
@@ -50,8 +50,8 @@ The library provides:
       **User guide**
       ^^^
 
-      In-depth explanations of problem setup, discretization, scaling, solvers,
-      and postprocessing.
+      Theory and implementation for modeling, discretizing, solving, and
+      interpreting optimal control problems.
 
       +++
 
