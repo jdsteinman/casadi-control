@@ -1,0 +1,51 @@
+{{ fullname }}
+{{ "=" * fullname|length }}
+
+.. automodule:: {{ fullname }}
+   :no-members:
+   :no-inherited-members:
+   :no-special-members:
+
+{% set classes = [] %}
+{% for item in members %}
+{%   if item in functions or item in data or item in exceptions %}
+{%   else %}
+{%     set _ = classes.append(item) %}
+{%   endif %}
+{% endfor %}
+
+{% if classes %}
+Classes
+-------
+
+.. autosummary::
+   :toctree: {{ toctree }}
+
+{% for item in classes %}
+   {{ fullname }}.{{ item }}
+{% endfor %}
+{% endif %}
+
+{% if functions %}
+Functions
+---------
+
+.. autosummary::
+   :toctree: {{ toctree }}
+
+{% for item in functions %}
+   {{ fullname }}.{{ item }}
+{% endfor %}
+{% endif %}
+
+{% if data %}
+Data
+----
+
+.. autosummary::
+   :toctree: {{ toctree }}
+
+{% for item in data %}
+   {{ fullname }}.{{ item }}
+{% endfor %}
+{% endif %}

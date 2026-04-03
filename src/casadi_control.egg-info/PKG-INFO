@@ -1,0 +1,36 @@
+Metadata-Version: 2.4
+Name: casadi-control
+Version: 0.1.0
+Summary: CasADi optimal control framework.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: casadi
+Requires-Dist: numpy
+Requires-Dist: matplotlib
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+
+
+# Testing Casadi
+
+## Installing Casadi
+
+1. `conda create -n casadi-test pip`
+2. `conda install numpy scipy matplotlib`
+3. `pip install casadi`
+
+## Installing the optimal control code
+
+1. From the project root (where pyproject.toml lives) run 
+```pip install -e .```
+
+2. (Optional) Verify the install 
+```
+python -c "import casadi_control; print('casadi_control imported successfully')"
+```
+
+## Running the examples
+
+Navigate to the examples/ directory and run the python scripts.
+
+
