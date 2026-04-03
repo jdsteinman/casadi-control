@@ -52,6 +52,7 @@
 # %%
 from __future__ import annotations
 
+from io import BytesIO
 import sys
 
 import numpy as np
@@ -163,8 +164,12 @@ axes[2].grid(True)
 axes[2].legend()
 
 if "ipykernel" in sys.modules:
-    from IPython.display import display
+    from IPython.display import Image, display
 
-    display(fig)
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    buf.seek(0)
+    display(Image(data=buf.read()))
+    plt.close(fig)
 else:
     plt.show()
