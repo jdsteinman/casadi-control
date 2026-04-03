@@ -39,7 +39,7 @@ jobs:
 
       - name: Build Sphinx HTML
         run: |
-          sphinx-build -b html doc/source doc/build/html
+          make docs-pages
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

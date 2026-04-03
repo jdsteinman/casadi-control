@@ -63,6 +63,8 @@
 # %%
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 import matplotlib.pyplot as plt
 import casadi as ca
@@ -178,4 +180,9 @@ axes[1].set_title("Control")
 axes[1].grid(True)
 axes[1].legend()
 
-plt.show()
+if "ipykernel" in sys.modules:
+    from IPython.display import display
+
+    display(fig)
+else:
+    plt.show()

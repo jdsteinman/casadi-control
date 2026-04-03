@@ -65,7 +65,7 @@ autosummary_imported_members = False
 numpydoc_show_class_members = True
 numpydoc_class_members_toctree = True
 autosummary_ignore_module_all = False
-nbsphinx_execute = 'auto'
+nbsphinx_execute = os.environ.get('NBSPHINX_EXECUTE', 'auto')
 nbsphinx_execute_arguments = [
     "--InlineBackend.figure_formats={'png', 'svg'}",
 ]
