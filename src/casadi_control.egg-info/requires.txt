@@ -1,6 +1,0 @@
-casadi
-numpy
-matplotlib
-
-[dev]
-pytest

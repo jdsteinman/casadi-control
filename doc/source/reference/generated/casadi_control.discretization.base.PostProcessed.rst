@@ -18,9 +18,9 @@ PostProcessed
       .. autosummary::
          :toctree:
       
-         PostProcessed.adj
-         PostProcessed.lam_path
-         PostProcessed.lam_state
+         PostProcessed.costate
+         PostProcessed.path_multiplier
+         PostProcessed.state_multiplier
          PostProcessed.u
          PostProcessed.x
       
@@ -32,9 +32,9 @@ PostProcessed
       .. autosummary::
          :toctree:
       
+         PostProcessed.decoded
          PostProcessed.dual_traj
          PostProcessed.traj
-         PostProcessed.views
          PostProcessed.diag
   
   

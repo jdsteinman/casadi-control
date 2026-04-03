@@ -27,8 +27,6 @@ SolutionArtifact
       .. autosummary::
          :toctree:
       
-         SolutionArtifact.schema
-         SolutionArtifact.version
          SolutionArtifact.discretization
          SolutionArtifact.arrays
          SolutionArtifact.meta

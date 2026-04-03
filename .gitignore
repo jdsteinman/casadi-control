@@ -1,0 +1,80 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# =========================
+# Packaging / build
+# =========================
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# If you ever build wheels locally
+*.whl
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# Testing / coverage
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# =========================
+# Sphinx documentation
+# =========================
+doc/build/
+docs/build/
+
+# If you ever use autosummary output caching
+doc/source/_autosummary/
+docs/source/_autosummary/
+
+# =========================
+# Jupyter (if you ever add notebooks)
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Editors / OS
+# =========================
+.DS_Store
+Thumbs.db
+
+# VSCode
+.vscode/
+
+# JetBrains
+.idea/
+
+# Vim / Neovim
+*.swp
+*.swo
+*~
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# Misc
+# =========================
+*.tmp
+*.bak

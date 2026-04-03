@@ -1,13 +1,6 @@
-:orphan:
-
-.. raw:: html
-
-   <div class="prename">casadi_control.discretization.base.NLP.</div>
-   <div class="empty"></div>
-
-traj
-===========================================
+﻿casadi\_control.discretization.base.NLP.traj
+============================================
 
 .. currentmodule:: casadi_control.discretization.base
 
-.. automethod:: NLP.traj
+.. autoattribute:: NLP.traj

@@ -18,9 +18,9 @@ DualTrajectory
       .. autosummary::
          :toctree:
       
-         DualTrajectory.adj
-         DualTrajectory.lam_path
-         DualTrajectory.lam_state
+         DualTrajectory.costate
+         DualTrajectory.path_multiplier
+         DualTrajectory.state_multiplier
       
   
 

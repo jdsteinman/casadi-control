@@ -20,7 +20,7 @@ NLP
       
          NLP.eval_f
          NLP.eval_g
-         NLP.traj
+         NLP.unpack
       
   
 
@@ -30,7 +30,6 @@ NLP
       .. autosummary::
          :toctree:
       
-         NLP.trajectories
          NLP.prob
          NLP.lbx
          NLP.ubx
